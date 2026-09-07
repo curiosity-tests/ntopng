@@ -53,8 +53,17 @@ jobs:
           sudo apt-get install build-essential
           sudo apt-get install libglib2.0 libxml2-dev libpcap-dev librrd-dev redis-server libsqlite3-dev libhiredis-dev libmaxminddb-dev libcurl4-openssl-dev libzmq3-dev git libjson-c-dev
       - name: Build nDPI
+        # Upstream clones nDPI's dev branch unpinned, so ntopng only ever builds
+        # against whatever nDPI HEAD is that hour. This fork is pinned to ntopng
+        # 62ea3d0d (2026-09-05 08:49Z) and nDPI 61337dad12 "Reworked code to split
+        # flow definition in core and metadata" landed at 13:48Z the same day,
+        # taking risk/protos/host_server_name off struct ndpi_flow_struct; ntopng
+        # adapted 14 minutes later in 17d4881399 "Fixes due to nDPI changes",
+        # which is newer than our pin. 4cae778e is nDPI dev HEAD as of the pinned
+        # ntopng commit, so this restores the pair that upstream last built green.
+        # Drop the checkout if the ntopng pin ever moves past 17d4881399.
         run: |
-          git clone https://github.com/ntop/nDPI.git; cd nDPI; ./autogen.sh; ./configure --with-only-libndpi --disable-shared; make -j $(nproc); cd ..
+          git clone https://github.com/ntop/nDPI.git; cd nDPI; git checkout -q 4cae778e7e8f846b34f11d4f8392504cdebd3db8; ./autogen.sh; ./configure --with-only-libndpi --disable-shared; make -j $(nproc); cd ..
       - name: Configure
         run: |
           ./autogen.sh
