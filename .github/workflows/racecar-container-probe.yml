@@ -1,0 +1,78 @@
+name: racecar container probe
+
+# Isolates Class 1 (container jobs install nothing yet report success).
+# Each job does EXACTLY ONE action-checkout, so if the container job still ends up
+# without CURIOSITY_ROOT then the cause is the container itself, not the
+# __CHALK_ALREADY_SETUP__ de-duplication guard (which needs a second invocation).
+# Reports state instead of asserting, so both jobs finish and can be compared.
+
+on:
+  workflow_dispatch:
+    inputs:
+      leg:
+        type: choice
+        options: [instrumented, baseline]
+        default: instrumented
+      profile:
+        type: string
+        default: curiosity-tests-racecar
+      racecar_run:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  CHALK_ON: ${{ inputs.leg == 'instrumented' }}
+
+run-name: "container probe ${{ inputs.leg }} ${{ inputs.racecar_run }}"
+
+jobs:
+  on-host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: crashappsec/action-checkout@e9ff46a65f6403d9d88b87d248c3dfa41550ec75
+        with:
+          chalk: ${{ env.CHALK_ON }}
+          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+          observables_continue_on_error: false
+          lfs: false
+      - name: Report instrumentation state
+        run: |
+          echo "PROBE where=host CHALK_ON=${CHALK_ON}"
+          echo "PROBE CURIOSITY_ROOT='${CURIOSITY_ROOT:-<unset>}'"
+          echo "PROBE CURIOSITY_SOCKET_NAME='${CURIOSITY_SOCKET_NAME:-<unset>}'"
+          echo "PROBE __CHALK_ALREADY_SETUP__='${__CHALK_ALREADY_SETUP__:-<unset>}'"
+          if [ -n "${CURIOSITY_SOCKET_NAME:-}" ] && [ -S "${CURIOSITY_SOCKET_NAME}" ]; then
+            echo "PROBE socket=present"; else echo "PROBE socket=absent"; fi
+
+  in-container:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:24.04
+    steps:
+      # containers ship without curl/bash-completions the action needs; same prep the
+      # testbed already applies, ungated so both arms are identical
+      - name: Install curl/bash for action-checkout
+        run: |
+          if command -v apt-get >/dev/null 2>&1; then
+            (apt-get update -qq && apt-get install -yqq curl ca-certificates git) \
+              || (sudo apt-get update -qq && sudo apt-get install -yqq curl ca-certificates git) \
+              || echo "racecar prep: package install failed, continuing"
+          fi
+      - uses: crashappsec/action-checkout@e9ff46a65f6403d9d88b87d248c3dfa41550ec75
+        with:
+          chalk: ${{ env.CHALK_ON }}
+          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+          observables_continue_on_error: false
+          lfs: false
+      - name: Report instrumentation state
+        run: |
+          echo "PROBE where=container image=ubuntu:24.04 CHALK_ON=${CHALK_ON}"
+          echo "PROBE CURIOSITY_ROOT='${CURIOSITY_ROOT:-<unset>}'"
+          echo "PROBE CURIOSITY_SOCKET_NAME='${CURIOSITY_SOCKET_NAME:-<unset>}'"
+          echo "PROBE __CHALK_ALREADY_SETUP__='${__CHALK_ALREADY_SETUP__:-<unset>}'"
+          if [ -n "${CURIOSITY_SOCKET_NAME:-}" ] && [ -S "${CURIOSITY_SOCKET_NAME}" ]; then
+            echo "PROBE socket=present"; else echo "PROBE socket=absent"; fi
