@@ -1,0 +1,84 @@
+name: racecar exit-code probe
+
+# Purpose-built probe for the "child exit codes may be masked under curiosity" question
+# raised by lighthouse (its self-checking harness observed no failures under instrumentation).
+# Deliberately NOT the canonical workflow: it must not perturb overhead measurement.
+# Run it on both arms and compare the observed statuses.
+
+on:
+  workflow_dispatch:
+    inputs:
+      leg:
+        description: "baseline (uninstrumented) or instrumented (under chalk/curiosity)"
+        type: choice
+        options: [instrumented, baseline]
+        default: instrumented
+      profile:
+        description: "CrashOverride chalk profile"
+        type: string
+        default: curiosity-tests-racecar
+      racecar_run:
+        description: "racecar correlation token, echoed into the run name"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  CHALK_ON: ${{ inputs.leg == 'instrumented' }}
+
+run-name: "exit-code probe ${{ inputs.leg }} ${{ inputs.racecar_run }}"
+
+jobs:
+  exitcodes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: crashappsec/action-checkout@e9ff46a65f6403d9d88b87d248c3dfa41550ec75
+        with:
+          chalk: ${{ env.CHALK_ON }}
+          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+          observables_continue_on_error: false
+          lfs: false
+
+      - name: Assert instrumentation is live
+        if: env.CHALK_ON == 'true'
+        run: |
+          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
+          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
+
+      - name: Observe child exit statuses
+        run: |
+          set +e
+          fail=0
+          check() {  # $1 = expected status, $2.. = command
+            expected="$1"; shift
+            "$@"; got=$?
+            if [ "$got" = "$expected" ]; then echo "ok   expected=$expected got=$got  ($*)"
+            else echo "BAD  expected=$expected got=$got  ($*)"; fail=1; fi
+          }
+          check 3 sh -c 'exit 3'
+          check 1 sh -c 'exit 1'
+          check 0 sh -c 'exit 0'
+          check 42 sh -c 'exit 42'
+          check 127 sh -c 'this-command-does-not-exist'
+          check 2 sh -c 'sh -c "exit 2"'                  # nested child
+          check 137 sh -c 'kill -9 $$'                    # SIGKILL -> 128+9
+          check 134 sh -c 'kill -6 $$'                    # SIGABRT -> 128+6
+
+          # a backgrounded child reaped with `wait` - the lighthouse-shaped case
+          sh -c 'exit 7' &
+          wait $!; got=$?
+          if [ "$got" = 7 ]; then echo "ok   expected=7 got=$got  (background child + wait)"
+          else echo "BAD  expected=7 got=$got  (background child + wait)"; fail=1; fi
+
+          # pipeline status propagation
+          out=$(sh -c 'exit 5' | cat; echo "${PIPESTATUS[0]:-unset}")
+          echo "info PIPESTATUS[0]=$out"
+
+          echo "---"
+          if [ "$fail" = 0 ]; then echo "ALL EXIT STATUSES OBSERVED CORRECTLY"
+          else echo "::error::at least one child exit status was NOT observed correctly"; fi
+          exit "$fail"
